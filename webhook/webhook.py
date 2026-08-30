@@ -9,10 +9,13 @@ Returns: {"reply": "<text for TTS>"}
 Forwards to hermes chat via stdin to avoid shell escaping issues.
 """
 import datetime
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 import zoneinfo
 from flask import Flask, jsonify, request
 
@@ -20,8 +23,15 @@ app = Flask(__name__)
 
 HERMES_BIN = os.environ.get("HERMES_BIN", "/home/bertram/.local/bin/hermes")
 CALLER_TIMEZONE = os.environ.get("CALLER_TIMEZONE", "America/Los_Angeles")
+TEMPEST_TOKEN = os.environ.get("TEMPEST_TOKEN", "")
+TEMPEST_STATION_ID = os.environ.get("TEMPEST_STATION_ID", "84180")
+TEMPEST_API_BASE = os.environ.get("TEMPEST_API_BASE", "https://swd.weatherflow.com/swd/rest")
+WEATHER_KEYWORDS = re.compile(
+    r"\b(weather|temperature|temp|forecast|rain|wind|humidity|barometer|pressure|snow|storm|sunny|cloudy|degrees)\b",
+    re.IGNORECASE,
+)
 
-# System prompt prepended to every question to shape Hermes' voice-assistant behavior.
+
 def _build_system_prompt():
     """Build the system prompt with current time injected."""
     try:
@@ -45,6 +55,73 @@ def _build_system_prompt():
     )
 
 
+def _is_weather_question(text: str) -> bool:
+    return bool(WEATHER_KEYWORDS.search(text))
+
+
+def _fetch_tempest_conditions() -> str:
+    if not TEMPEST_TOKEN:
+        return ""
+    url = f"{TEMPEST_API_BASE}/observations/stn/{TEMPEST_STATION_ID}?token={TEMPEST_TOKEN}"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return f"Tempest weather data unavailable: {exc}"
+
+    try:
+        obs = payload.get("obs", [[]])
+        if not obs or not obs[0]:
+            return "Tempest station returned no current observations."
+        current = obs[0]
+        keys = payload.get("obs_meta", {}).get("keys", [])
+        if not keys:
+            return "Tempest observation metadata is missing."
+
+        def _v(name):
+            try:
+                return current[keys.index(name)]
+            except ValueError:
+                return None
+
+        temp_c = _v("air_temperature")
+        feels_c = _v("feels_like_temperature")
+        humidity = _v("relative_humidity")
+        wind_speed = _v("wind_speed")
+        wind_gust = _v("wind_gust")
+        precip = _v("precip_accum_last_1hr")
+        press = _v("pressure")
+        cond = _v("conditions")
+        solar = _v("solar_radiation")
+
+        parts = []
+        if temp_c is not None:
+            parts.append(f"{temp_c:.1f}°C")
+        if feels_c is not None:
+            parts.append(f"feels like {feels_c:.1f}°C")
+        if humidity is not None:
+            parts.append(f"humidity {humidity:.0f}%")
+        if wind_speed is not None:
+            parts.append(f"wind {wind_speed:.1f} meters per second")
+        if wind_gust is not None:
+            parts.append(f"gusts to {wind_gust:.1f}")
+        if precip is not None:
+            parts.append(f"precipitation last hour {precip:.1f} millimeters")
+        if press is not None:
+            parts.append(f"pressure {press:.1f} millibars")
+        if cond:
+            parts.append(f"conditions {cond}")
+        if solar is not None:
+            parts.append(f"solar radiation {solar:.0f} watts per square meter")
+
+        if not parts:
+            return "Tempest data is available but I could not parse current conditions."
+        return "Current conditions from the local Tempest station: " + ", ".join(parts) + "."
+    except Exception as exc:
+        return f"I had trouble reading the Tempest observation: {exc}"
+
+
 @app.route("/ask", methods=["POST"])
 def ask():
     payload = request.get_json(silent=True) or {}
@@ -53,11 +130,12 @@ def ask():
     if not text:
         return jsonify({"reply": ""}), 400
 
-    # If we have a session_id, resume that conversation; this lets Hermes remember prior turns.
-    # Otherwise, build a fresh session with the system prompt injected.
     system_prompt = _build_system_prompt()
+    weather_context = ""
+    if _is_weather_question(text):
+        weather_context = "\n\nLive local weather data:\n" + _fetch_tempest_conditions() + "\n"
+
     if session_id:
-        # --resume re-attaches to an existing session; --continue without id would create a new one
         args = [
             HERMES_BIN, "chat", "--oneshot", "-Q", "--yolo", "--reasoning", "none",
             "-m", "stepfun/step-3.7-flash:free",
@@ -65,7 +143,7 @@ def ask():
             "--resume", session_id,
             "--query-file", "-",
         ]
-        combined = text  # No system prompt injection on resume
+        combined = f"{text}{weather_context}"
     else:
         args = [
             HERMES_BIN, "chat", "--oneshot", "-Q", "--yolo", "--reasoning", "none",
@@ -73,7 +151,7 @@ def ask():
             "--source", "phone",
             "--query-file", "-",
         ]
-        combined = f"{system_prompt}\nCaller question: {text}"
+        combined = f"{system_prompt}{weather_context}\nCaller question: {text}"
 
     try:
         result = subprocess.run(
@@ -91,7 +169,6 @@ def ask():
     except Exception as exc:
         reply = f"Sorry, something went wrong: {exc}"
 
-    # Hermes prints the session_id to stderr on the first line, not stdout
     new_session_id = None
     for stream in (result.stdout, result.stderr if result else ""):
         if not stream:
