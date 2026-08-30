@@ -1,0 +1,19 @@
+[Unit]
+Description=Hermes ARI Voice Bridge (FreePBX dial-0 to Hermes)
+After=network-online.target asterisk.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/hermes-ari
+ExecStart=/opt/hermes-ari/venv/bin/python -u /opt/hermes-ari/bridge.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

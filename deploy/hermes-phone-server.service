@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes Phone Webhook (Flask, STT/TTS/Hermes bridge backend)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bertram
+Group=bertram
+WorkingDirectory=/home/bertram/hermes-phone-server
+ExecStart=/home/bertram/hermes-phone-server/venv/bin/python /home/bertram/hermes-phone-server/hermes_phone_server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+Environment=PYTHONUNBUFFERED=1
+Environment=PORT=8765
+
+[Install]
+WantedBy=multi-user.target
