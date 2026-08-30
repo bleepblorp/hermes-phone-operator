@@ -60,7 +60,7 @@ def ask():
         # --resume re-attaches to an existing session; --continue without id would create a new one
         args = [
             HERMES_BIN, "chat", "--oneshot", "-Q", "--yolo", "--reasoning", "none",
-            "-m", "minimax/minimax-m3",
+            "-m", "stepfun/step-3.7-flash:free",
             "--source", "phone",
             "--resume", session_id,
             "--query-file", "-",
@@ -69,7 +69,7 @@ def ask():
     else:
         args = [
             HERMES_BIN, "chat", "--oneshot", "-Q", "--yolo", "--reasoning", "none",
-            "-m", "minimax/minimax-m3",
+            "-m", "stepfun/step-3.7-flash:free",
             "--source", "phone",
             "--query-file", "-",
         ]
