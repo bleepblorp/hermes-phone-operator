@@ -75,7 +75,7 @@ def _fetch_tempest_conditions() -> str:
         if not obs or not obs[0]:
             return "Tempest station returned no current observations."
         current = obs[0]
-        keys = payload.get("obs_meta", {}).get("keys", [])
+        keys = payload.get("ob_fields", [])
         if not keys:
             return "Tempest observation metadata is missing."
 
@@ -85,21 +85,17 @@ def _fetch_tempest_conditions() -> str:
             except ValueError:
                 return None
 
-        temp_c = _v("air_temperature")
-        feels_c = _v("feels_like_temperature")
-        humidity = _v("relative_humidity")
-        wind_speed = _v("wind_speed")
+        temp_c = _v("air_temp")
+        humidity = _v("rh")
+        wind_speed = _v("wind_avg")
         wind_gust = _v("wind_gust")
-        precip = _v("precip_accum_last_1hr")
-        press = _v("pressure")
-        cond = _v("conditions")
+        precip = _v("precip_accumulation")
+        press = _v("station_pressure")
         solar = _v("solar_radiation")
 
         parts = []
         if temp_c is not None:
             parts.append(f"{temp_c:.1f}°C")
-        if feels_c is not None:
-            parts.append(f"feels like {feels_c:.1f}°C")
         if humidity is not None:
             parts.append(f"humidity {humidity:.0f}%")
         if wind_speed is not None:
@@ -110,8 +106,6 @@ def _fetch_tempest_conditions() -> str:
             parts.append(f"precipitation last hour {precip:.1f} millimeters")
         if press is not None:
             parts.append(f"pressure {press:.1f} millibars")
-        if cond:
-            parts.append(f"conditions {cond}")
         if solar is not None:
             parts.append(f"solar radiation {solar:.0f} watts per square meter")
 
