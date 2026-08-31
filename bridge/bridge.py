@@ -345,13 +345,41 @@ async def schedule_callback(extension: str, delay_sec: int, reminder_text: str):
         print(f"[callback] failed: {exc}", flush=True)
 
 
+def _word_to_num(word: str):
+    """Convert simple English number words to int. Supports 1-60."""
+    w = word.lower()
+    nums = {
+        "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+        "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14,
+        "fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18,
+        "nineteen": 19, "twenty": 20, "thirty": 30, "forty": 40,
+        "fifty": 50, "sixty": 60,
+    }
+    if w in nums:
+        return nums[w]
+    for base, val in [("twenty", 20), ("thirty", 30), ("forty", 40), ("fifty", 50)]:
+        if w.startswith(base):
+            remainder = w[len(base):]
+            if remainder:
+                m2 = re.match(r"-(one|two|three|four|five|six|seven|eight|nine)$", remainder)
+                if m2:
+                    return val + nums[m2.group(1)]
+            return val
+    return None
+
+
 def parse_callback_request(text: str):
     """Return minutes or None if not a callback request."""
-    m = re.search(r"call me back in (\d+)\s*(?:minute|min|m)", text, re.IGNORECASE)
+    m = re.search(r"call me back in ([a-zA-Z0-9]+)\s*(?:minute|min|m)", text, re.IGNORECASE)
     if not m:
         return None
-    minutes = int(m.group(1))
-    if minutes < CALLBACK_MIN_MIN or minutes > CALLBACK_MAX_MIN:
+    raw = m.group(1)
+    try:
+        minutes = int(raw)
+    except ValueError:
+        minutes = _word_to_num(raw)
+    if not minutes or minutes < CALLBACK_MIN_MIN or minutes > CALLBACK_MAX_MIN:
         return None
     return minutes
 
