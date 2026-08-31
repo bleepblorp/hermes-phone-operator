@@ -26,8 +26,14 @@ CALLER_TIMEZONE = os.environ.get("CALLER_TIMEZONE", "America/Los_Angeles")
 TEMPEST_TOKEN = os.environ.get("TEMPEST_TOKEN", "")
 TEMPEST_STATION_ID = os.environ.get("TEMPEST_STATION_ID", "84180")
 TEMPEST_API_BASE = os.environ.get("TEMPEST_API_BASE", "https://swd.weatherflow.com/swd/rest")
+LMS_URL = os.environ.get("LMS_URL", "http://192.168.1.38:9000/jsonrpc.js")
+LMS_DEFAULT_PLAYER = os.environ.get("LMS_DEFAULT_PLAYER", "00:04:20:29:45:77")
 WEATHER_KEYWORDS = re.compile(
     r"\b(weather|temperature|temp|forecast|rain|wind|humidity|barometer|pressure|snow|storm|sunny|cloudy|degrees)\b",
+    re.IGNORECASE,
+)
+MUSIC_KEYWORDS = re.compile(
+    r"\b(play|pause|stop|resume|skip|next|previous|volume|louder|quieter|music|song|artist|album|playlist)\b",
     re.IGNORECASE,
 )
 
@@ -122,6 +128,89 @@ def _fetch_tempest_conditions() -> str:
         return f"I had trouble reading the Tempest observation: {exc}"
 
 
+def _lms_jsonrpc(player_id, *params):
+    payload = json.dumps({
+        "id": 1,
+        "method": "slim.request",
+        "params": [player_id, list(params)],
+    }).encode()
+    req = urllib.request.Request(
+        LMS_URL,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _is_music_request(text: str) -> bool:
+    return bool(MUSIC_KEYWORDS.search(text))
+
+
+def _handle_music_request(text: str) -> str:
+    player = LMS_DEFAULT_PLAYER
+    lower = text.lower()
+
+    def lms(*params):
+        try:
+            _lms_jsonrpc(player, *params)
+        except Exception as exc:
+            return f"Sorry, I couldn't reach the music system: {exc}"
+
+    # Playback controls
+    if re.search(r"\b(pause|hold)\b", lower):
+        lms("pause")
+        return "Paused Radio."
+    if re.search(r"\b(resume|unpause|continue)\b", lower):
+        lms("play")
+        return "Resuming Radio."
+    if re.search(r"\b(stop)\b", lower):
+        lms("stop")
+        return "Stopped Radio."
+    if re.search(r"\b(next|skip)\b", lower):
+        lms("playlist", "index", "+1")
+        return "Skipping to next track on Radio."
+    if re.search(r"\b(previous|back)\b", lower):
+        lms("playlist", "index", "-1")
+        return "Going back to previous track on Radio."
+    if re.search(r"\b(louder|turn it up|volume up)\b", lower):
+        lms("mixer", "volume", "+10%")
+        return "Turned Radio up."
+    if re.search(r"\b(quieter|turn it down|volume down|shhh)\b", lower):
+        lms("mixer", "volume", "-10%")
+        return "Turned Radio down."
+
+    # Search queries: playlist / artist / album / song
+    query = None
+    cmd = None
+    m = re.search(r"play\s+(?:the\s+)?(?:playlist|playlists)?\s*(?:named\s+)?(.+)", lower)
+    if m:
+        query = m.group(1).strip().strip(".")
+        cmd = "playlist"
+    m = re.search(r"play\s+(?:artist|band|group)\s+(.+)", lower)
+    if m:
+        query = m.group(1).strip().strip(".")
+        cmd = "artist"
+    m = re.search(r"play\s+(?:album|record|cd)\s+(.+)", lower)
+    if m:
+        query = m.group(1).strip().strip(".")
+        cmd = "album"
+    m = re.search(r"play\s+(?:song|track|tune)\s+(.+)", lower)
+    if m:
+        query = m.group(1).strip().strip(".")
+        cmd = "title"
+
+    if query and cmd:
+        lms("playlist", "loadtracks", cmd, query, "1")
+        lms("play")
+        label = cmd if cmd != "title" else "song"
+        return f"Playing {label} {query} on Radio."
+
+    # Fallback generic play
+    lms("play")
+    return "Playing Radio."
+
+
 @app.route("/ask", methods=["POST"])
 def ask():
     payload = request.get_json(silent=True) or {}
@@ -134,6 +223,10 @@ def ask():
     weather_context = ""
     if _is_weather_question(text):
         weather_context = "\n\nLive local weather data:\n" + _fetch_tempest_conditions() + "\n"
+
+    music_reply = ""
+    if _is_music_request(text):
+        music_reply = _handle_music_request(text)
 
     if session_id:
         args = [
@@ -170,16 +263,17 @@ def ask():
         reply = f"Sorry, something went wrong: {exc}"
 
     new_session_id = None
-    for stream in (result.stdout, result.stderr if result else ""):
-        if not stream:
-            continue
-        m = re.search(r"session_id[\s:]+([A-Za-z0-9_]+)", stream)
-        if m:
-            new_session_id = m.group(1)
-            break
+    if not music_reply:
+        for stream in (result.stdout, result.stderr if result else ""):
+            if not stream:
+                continue
+            m = re.search(r"session_id[\s:]+([A-Za-z0-9_]+)", stream)
+            if m:
+                new_session_id = m.group(1)
+                break
 
-    response = {"reply": reply}
-    if new_session_id:
+    response = {"reply": music_reply or reply}
+    if not music_reply and new_session_id:
         response["session_id"] = new_session_id
     return jsonify(response)
 
