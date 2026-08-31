@@ -35,6 +35,8 @@ OBSIDIAN_CALL_LOG_DIR = os.environ.get(
 )
 RECORD_MAX_SEC = 5
 RECORD_SILENCE_SEC = 1
+CALLBACK_MIN_MIN = 1
+CALLBACK_MAX_MIN = 60
 
 EXIT_PHRASES = [
     "goodbye",
@@ -239,6 +241,24 @@ async def handle_turn(cid, rec_path, turn_index):
     state["silent_count"] = 0
     if is_exit_phrase(transcript):
         print(f"[turn {turn_index} {cid}] exit phrase detected", flush=True)
+        callback_req = parse_callback_request(transcript)
+        if callback_req:
+            minutes = callback_req
+            ext = state.get('extension', 'PJSIP/200')
+            reminder = f'Reminder: you asked me to call you back {minutes} minutes ago.'
+            reply_text = "Okay, I'll call you back in " + str(minutes) + " minutes."
+            state.setdefault('transcript', []).append({
+                'role': 'assistant',
+                'text': reply_text,
+                'ts': datetime.now().isoformat(timespec='seconds'),
+            })
+            await tts_and_play(cid, reply_text, f'callback-confirm-{turn_index}')
+            await asyncio.sleep(1)
+            asyncio.create_task(schedule_callback(ext, minutes * 60, reminder))
+            ari_call('DELETE', f'/channels/{cid}', {})
+            await write_obsidian_call_log(cid)
+            CALL_STATE.pop(cid, None)
+            return False
         await tts_and_play(cid, GOODBYE_TEXT, f"goodbye-{turn_index_str}")
         await asyncio.sleep(2)
         try:
@@ -301,6 +321,48 @@ async def handle_turn(cid, rec_path, turn_index):
     # Continue: start next recording
     new_rec_path, _ = start_recording(cid, suffix=f"-{int(turn_index_str) + 1}")
     return True
+
+
+
+async def schedule_callback(extension: str, delay_sec: int, reminder_text: str):
+    """Schedule an outbound call via ARI channel originate after a delay."""
+    await asyncio.sleep(delay_sec)
+    try:
+        payload = {
+            "endpoint": extension,
+            "app": APP_NAME,
+            "appArgs": f"callback|{reminder_text}",
+            "callerId": "Hermes <0>",
+            "timeout": 30,
+        }
+        status, _ = ari_call("POST", "/channels", payload)
+        print(f"[callback] originated {extension} after {delay_sec}s (status={status})", flush=True)
+    except Exception as exc:
+        print(f"[callback] failed: {exc}", flush=True)
+
+
+def parse_callback_request(text: str):
+    """Return minutes or None if not a callback request."""
+    m = re.search(r"call me back in (\d+)\s*(?:minute|min|m)", text, re.IGNORECASE)
+    if not m:
+        return None
+    minutes = int(m.group(1))
+    if minutes < CALLBACK_MIN_MIN or minutes > CALLBACK_MAX_MIN:
+        return None
+    return minutes
+
+
+async def handle_callback_channel(cid, reminder_text: str):
+    """Answer a callback-originated channel, play reminder, hang up."""
+    try:
+        ari_call("POST", f"/channels/{cid}/answer", {})
+        base = f"callback-{cid.replace('.', '_')}"
+        await tts_and_play(cid, reminder_text, base)
+        await asyncio.sleep(2)
+        ari_call("DELETE", f"/channels/{cid}", {})
+        print(f"[callback] reminder played for {cid}", flush=True)
+    except Exception as exc:
+        print(f"[callback] error: {exc}", flush=True)
 
 
 async def write_obsidian_call_log(cid):
@@ -395,6 +457,11 @@ async def stasis(websocket):
 
             if etype == "StasisStart":
                 if chan_name.startswith("Snoop/"):
+                    continue
+                app_args = event.get("appArgs", "") or ""
+                if app_args.startswith("callback|"):
+                    reminder_text = app_args.split("callback|", 1)[1]
+                    asyncio.create_task(handle_callback_channel(cid, reminder_text))
                     continue
                 await handle_call(cid)
 
