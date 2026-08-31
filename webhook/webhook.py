@@ -93,11 +93,17 @@ def _fetch_tempest_conditions() -> str:
         press = _v("station_pressure")
         solar = _v("solar_radiation")
 
+        def c_to_f(c):
+            if c is None:
+                return None
+            return round((c * 9/5) + 32, 1)
+
         parts = []
-        if temp_c is not None:
-            parts.append(f"{temp_c:.1f}°C")
+        temp_f = c_to_f(temp_c)
+        if temp_f is not None:
+            parts.append(f"{temp_f} degrees Fahrenheit")
         if humidity is not None:
-            parts.append(f"humidity {humidity:.0f}%")
+            parts.append(f"humidity {humidity:.0f} percent")
         if wind_speed is not None:
             parts.append(f"wind {wind_speed:.1f} meters per second")
         if wind_gust is not None:
