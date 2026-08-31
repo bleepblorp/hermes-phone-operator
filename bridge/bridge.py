@@ -237,28 +237,32 @@ async def handle_turn(cid, rec_path, turn_index):
         new_rec_path, _ = start_recording(cid, suffix=f"-{int(turn_index_str) + 1}")
         return True  # re-record
 
-    # Reset silent count and check exit phrase
+    # Reset silent count
     state["silent_count"] = 0
+
+    # Check callback request BEFORE sending to Hermes
+    callback_req = parse_callback_request(transcript)
+    if callback_req:
+        minutes = callback_req
+        ext = state.get('extension', 'PJSIP/200')
+        reminder = f'Reminder: you asked me to call you back {minutes} minutes ago.'
+        reply_text = "Okay, I'll call you back in " + str(minutes) + " minutes."
+        state.setdefault('transcript', []).append({
+            'role': 'assistant',
+            'text': reply_text,
+            'ts': datetime.now().isoformat(timespec='seconds'),
+        })
+        await tts_and_play(cid, reply_text, f'callback-confirm-{turn_index}')
+        await asyncio.sleep(1)
+        asyncio.create_task(schedule_callback(ext, minutes * 60, reminder))
+        ari_call('DELETE', f'/channels/{cid}', {})
+        await write_obsidian_call_log(cid)
+        CALL_STATE.pop(cid, None)
+        return False
+
+    # Check exit phrase
     if is_exit_phrase(transcript):
         print(f"[turn {turn_index} {cid}] exit phrase detected", flush=True)
-        callback_req = parse_callback_request(transcript)
-        if callback_req:
-            minutes = callback_req
-            ext = state.get('extension', 'PJSIP/200')
-            reminder = f'Reminder: you asked me to call you back {minutes} minutes ago.'
-            reply_text = "Okay, I'll call you back in " + str(minutes) + " minutes."
-            state.setdefault('transcript', []).append({
-                'role': 'assistant',
-                'text': reply_text,
-                'ts': datetime.now().isoformat(timespec='seconds'),
-            })
-            await tts_and_play(cid, reply_text, f'callback-confirm-{turn_index}')
-            await asyncio.sleep(1)
-            asyncio.create_task(schedule_callback(ext, minutes * 60, reminder))
-            ari_call('DELETE', f'/channels/{cid}', {})
-            await write_obsidian_call_log(cid)
-            CALL_STATE.pop(cid, None)
-            return False
         await tts_and_play(cid, GOODBYE_TEXT, f"goodbye-{turn_index_str}")
         await asyncio.sleep(2)
         try:
